@@ -1,0 +1,22 @@
+{
+  "name": "wx2md",
+  "version": "1.0.0",
+  "description": "微信公众号文章转 Markdown 命令行工具",
+  "type": "module",
+  "bin": {
+    "wx2md": "./cli.mjs"
+  },
+  "scripts": {
+    "start": "node cli.mjs"
+  },
+  "keywords": ["wechat", "markdown", "cli", "weixin"],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "turndown": "^7.2.0"
+  }
+}
