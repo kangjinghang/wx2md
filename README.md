@@ -36,6 +36,9 @@ node cli.mjs -o ~/articles "https://mp.weixin.qq.com/s/xxxxx"
 # Download compressed images (640px, smaller file size)
 node cli.mjs --img compressed "https://mp.weixin.qq.com/s/xxxxx"
 
+# Use image proxy (images stay online, no local storage)
+node cli.mjs --proxy https://your-proxy.netlify.app "https://mp.weixin.qq.com/s/xxxxx"
+
 # Batch processing (one URL per line)
 node cli.mjs --file urls.txt
 
@@ -50,6 +53,8 @@ node cli.mjs -o ~/articles --img compressed --file urls.txt
 | `--file <path>` | `-f` | Read URL list from a text file (one URL per line) | - |
 | `--output <dir>` | `-o` | Output directory | `./output` |
 | `--img <quality>` | `-i` | Image quality: `original` or `compressed` | `original` |
+| `--img-mode <mode>` | | Image mode: `local` (download) or `proxy` (online) | `local` |
+| `--proxy <url>` | | Image proxy base URL (enables proxy mode) | - |
 | `--help` | `-h` | Show help | - |
 
 ### Output Structure
@@ -84,6 +89,41 @@ Article content with ![images](assets/001.jpeg) converted to Markdown...
 4. Converts HTML to Markdown using Turndown
 5. Replaces remote image URLs with local paths
 6. Saves everything to disk
+
+## Image Proxy
+
+By default, images are downloaded locally. If you want to save disk space, you can deploy an image proxy and use `--proxy` to keep images online.
+
+### Deploy your own proxy
+
+Pre-built proxy functions are included in the `netlify/`, `vercel/`, and `worker/` directories:
+
+| Platform | Directory | Free tier | China access |
+|---|---|---|---|
+| Netlify | `netlify/` | 125K requests/month | Yes |
+| Vercel | `vercel/` | 100K requests/month | Needs custom domain |
+| Cloudflare Workers | `worker/` | 100K requests/day | Needs custom domain |
+
+Deploy to Netlify (recommended for China users):
+
+```bash
+cd netlify
+netlify deploy --prod
+```
+
+Then use the proxy:
+
+```bash
+node cli.mjs --proxy https://your-site.netlify.app "https://mp.weixin.qq.com/s/xxxxx"
+```
+
+### How the proxy works
+
+The proxy forwards image requests with the correct `Referer` header to bypass WeChat's anti-hotlinking. Your Markdown files will contain proxy URLs like:
+
+```
+![image](https://your-proxy.netlify.app/?url=https%3A%2F%2Fmmbiz.qpic.cn%2F...)
+```
 
 ## Limitations
 
@@ -135,6 +175,9 @@ node cli.mjs -o ~/articles "https://mp.weixin.qq.com/s/xxxxx"
 # 下载压缩图（640px，体积更小）
 node cli.mjs --img compressed "https://mp.weixin.qq.com/s/xxxxx"
 
+# 使用图片代理（图片保持在线，不占用本地存储）
+node cli.mjs --proxy https://your-proxy.netlify.app "https://mp.weixin.qq.com/s/xxxxx"
+
 # 批量处理（文本文件，一行一个 URL）
 node cli.mjs --file urls.txt
 
@@ -149,6 +192,8 @@ node cli.mjs -o ~/articles --img compressed --file urls.txt
 | `--file <path>` | `-f` | 从文本文件读取 URL 列表（一行一个） | - |
 | `--output <dir>` | `-o` | 输出目录 | `./output` |
 | `--img <quality>` | `-i` | 图片质量：`original`（原图）或 `compressed`（压缩） | `original` |
+| `--img-mode <mode>` | | 图片模式：`local`（本地下载）或 `proxy`（在线代理） | `local` |
+| `--proxy <url>` | | 图片代理地址（设置后自动启用 proxy 模式） | - |
 | `--help` | `-h` | 显示帮助信息 | - |
 
 ### 输出目录结构

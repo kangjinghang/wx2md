@@ -27,7 +27,7 @@ const REQUEST_HEADERS = {
 // ─── 参数解析 ────────────────────────────────────────────
 
 function parseArgs(args) {
-  const options = { output: './output', file: null, urls: [], imgQuality: 'original' };
+  const options = { output: './output', file: null, urls: [], imgQuality: 'original', imgMode: 'local', proxy: null };
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -37,12 +37,21 @@ function parseArgs(args) {
       options.output = args[++i];
     } else if (arg === '--img' || arg === '-i') {
       options.imgQuality = args[++i] || 'original';
+    } else if (arg === '--img-mode') {
+      options.imgMode = args[++i] || 'local';
+    } else if (arg === '--proxy') {
+      options.proxy = args[++i];
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
     } else if (arg.startsWith('http')) {
       options.urls.push(arg);
     }
+  }
+
+  // --proxy 隐含 --img-mode proxy
+  if (options.proxy && options.imgMode === 'local') {
+    options.imgMode = 'proxy';
   }
 
   return options;
@@ -57,11 +66,14 @@ Usage:
   npx wx2md --file urls.txt                # 批量（一行一个 URL）
   npx wx2md -o ~/articles <url>            # 指定输出目录
   npx wx2md --img compressed <url>         # 下载压缩图（640px）
+  npx wx2md --proxy https://proxy.example.com <url>  # 图片走代理（不下载本地）
 
 Options:
   -f, --file <path>                从文件读取 URL 列表
   -o, --output <dir>               输出目录（默认 ./output）
   -i, --img <original|compressed>  图片质量（默认 original 原图）
+      --img-mode <local|proxy>     图片模式（默认 local 本地下载）
+      --proxy <url>                图片代理地址（设置后自动启用 proxy 模式）
   -h, --help                       显示帮助信息
   `);
 }
@@ -145,13 +157,16 @@ function parseArticle(rawHtml, imgQuality) {
   // 用正则提取图片 URL（从 data-src，HTML 中的原始值含 &amp;）
   const imgUrlRegex = /data-src="([^"]*mmbiz[^"]*)"/gi;
   const htmlImages = []; // HTML 中的原始 URL（含 &amp;）
-  const realImages = []; // 解码后的原图 URL（用于下载）
+  const rawImages = []; // 解码后的原始 URL（未调整尺寸，用于 Markdown 替换匹配）
+  const realImages = []; // 调整尺寸后的 URL（用于下载）
   let match;
   while ((match = imgUrlRegex.exec(contentHtml)) !== null) {
     const htmlUrl = match[1];
-    const realUrl = adjustImageUrl(htmlDecode(htmlUrl), imgQuality);
-    if (!realImages.includes(realUrl)) {
+    const rawUrl = htmlDecode(htmlUrl);
+    const realUrl = adjustImageUrl(rawUrl, imgQuality);
+    if (!rawImages.includes(rawUrl)) {
       htmlImages.push(htmlUrl);
+      rawImages.push(rawUrl);
       realImages.push(realUrl);
     }
   }
@@ -160,7 +175,7 @@ function parseArticle(rawHtml, imgQuality) {
   // 微信文章的 img 标签只有 data-src 没有 src，必须转换
   contentHtml = contentHtml.replace(/data-src="/g, 'src="');
 
-  return { title, author, publishTime, contentHtml, htmlImages, realImages };
+  return { title, author, publishTime, contentHtml, htmlImages, rawImages, realImages };
 }
 
 function sanitizeFilename(name) {
@@ -261,11 +276,11 @@ function htmlToMarkdown(html, title, author, publishTime, sourceUrl) {
 
 // ─── 单篇文章处理 ─────────────────────────────────────────
 
-async function processArticle(url, outputDir, imgQuality) {
+async function processArticle(url, outputDir, imgQuality, imgMode, proxyUrl) {
   console.log('\n📄 处理: ' + url);
 
   const rawHtml = await fetchArticleHtml(url);
-  const { title, author, publishTime, contentHtml, htmlImages, realImages } = parseArticle(rawHtml, imgQuality);
+  const { title, author, publishTime, contentHtml, htmlImages, rawImages, realImages } = parseArticle(rawHtml, imgQuality);
 
   console.log('   标题: ' + title);
   console.log('   作者: ' + (author || '未知'));
@@ -273,32 +288,54 @@ async function processArticle(url, outputDir, imgQuality) {
 
   const dirName = sanitizeFilename(title);
   const articleDir = resolve(outputDir, dirName);
-  const assetsDir = join(articleDir, 'assets');
-  mkdirSync(assetsDir, { recursive: true });
-
-  console.log('   下载图片中...');
-  const urlMap = await downloadImages(realImages, assetsDir);
-  console.log('   已下载 ' + urlMap.size + '/' + realImages.length + ' 张图片');
 
   // 转 Markdown（此时 img 的 src 已从 data-src 复制过来，Turndown 能识别）
   let markdown = htmlToMarkdown(contentHtml, title, author, publishTime, url);
 
-  // 在 Markdown 中把图片远程 URL 替换为本地路径
-  // Turndown 输出中 URL 可能是 HTML 实体形式（&amp;）或已解码形式（&）
-  for (let i = 0; i < realImages.length; i++) {
-    const realUrl = realImages[i];
-    const htmlUrl = htmlImages[i]; // 含 &amp;
-    const localPath = urlMap.get(realUrl);
-    if (!localPath) continue;
+  if (imgMode === 'proxy' && proxyUrl) {
+    // 代理模式：用代理 URL 替换图片链接，不下载到本地
+    const proxyBase = proxyUrl.replace(/\/+$/, '');
+    for (let i = 0; i < rawImages.length; i++) {
+      const rawUrl = rawImages[i];
+      const htmlUrl = htmlImages[i];
+      const proxyImageUrl = proxyBase + '/?url=' + encodeURIComponent(rawUrl);
 
-    // 替换 HTML 实体形式
-    if (htmlUrl !== realUrl) {
-      const escaped1 = htmlUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      markdown = markdown.replace(new RegExp(escaped1, 'g'), localPath);
+      // 替换 HTML 实体形式（含 &amp;）
+      if (htmlUrl !== rawUrl) {
+        const escaped1 = htmlUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        markdown = markdown.replace(new RegExp(escaped1, 'g'), proxyImageUrl);
+      }
+      // 替换已解码形式（Turndown 输出就是这种）
+      const escaped2 = rawUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      markdown = markdown.replace(new RegExp(escaped2, 'g'), proxyImageUrl);
     }
-    // 替换已解码形式
-    const escaped2 = realUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    markdown = markdown.replace(new RegExp(escaped2, 'g'), localPath);
+    mkdirSync(articleDir, { recursive: true });
+    console.log('   图片使用代理: ' + proxyBase);
+  } else {
+    // 本地模式：下载图片到 assets/
+    const assetsDir = join(articleDir, 'assets');
+    mkdirSync(assetsDir, { recursive: true });
+
+    console.log('   下载图片中...');
+    const urlMap = await downloadImages(realImages, assetsDir);
+    console.log('   已下载 ' + urlMap.size + '/' + realImages.length + ' 张图片');
+
+    for (let i = 0; i < rawImages.length; i++) {
+      const rawUrl = rawImages[i];
+      const htmlUrl = htmlImages[i];
+      const realUrl = realImages[i];
+      const localPath = urlMap.get(realUrl);
+      if (!localPath) continue;
+
+      // 替换 HTML 实体形式（含 &amp;）
+      if (htmlUrl !== rawUrl) {
+        const escaped1 = htmlUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        markdown = markdown.replace(new RegExp(escaped1, 'g'), localPath);
+      }
+      // 替换已解码形式（Turndown 输出）
+      const escaped2 = rawUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      markdown = markdown.replace(new RegExp(escaped2, 'g'), localPath);
+    }
   }
 
   const mdPath = join(articleDir, 'index.md');
@@ -329,11 +366,14 @@ async function main() {
   }
 
   console.log('共 ' + urls.length + ' 篇文章待处理，输出目录: ' + resolve(options.output));
+  if (options.imgMode === 'proxy' && options.proxy) {
+    console.log('图片代理: ' + options.proxy);
+  }
 
   const results = [];
   for (const url of urls) {
     try {
-      const result = await processArticle(url, options.output, options.imgQuality);
+      const result = await processArticle(url, options.output, options.imgQuality, options.imgMode, options.proxy);
       results.push(result);
     } catch (err) {
       console.error('   ❌ 失败: ' + err.message);
