@@ -59,14 +59,26 @@ node cli.mjs -o ~/articles --img compressed --file urls.txt
 
 ### Output Structure
 
+**Local mode (`--img-mode local`, default):**
+
 ```
 output/
-└── Article Title/
-    ├── index.md        # Markdown with YAML front matter + local image paths
-    └── assets/
-        ├── 001.jpeg
-        ├── 002.png
-        └── ...
+├── Article Title 1.md
+├── Article Title 2.md
+└── assets/
+    ├── Article Title 1/
+    │   ├── 001.jpeg
+    │   └── 002.png
+    └── Article Title 2/
+        └── 001.jpeg
+```
+
+**Proxy mode (`--proxy <url>`):**
+
+```
+output/
+├── Article Title 1.md
+└── Article Title 2.md
 ```
 
 ### Markdown Output Example
@@ -75,6 +87,9 @@ output/
 ---
 title: "Article Title"
 author: "Account Name"
+date: "2026-05-08"
+description: "Article summary from meta tag"
+cover: "https://mmbiz.qpic.cn/..."
 source: "https://mp.weixin.qq.com/s/xxxxx"
 ---
 
@@ -198,14 +213,26 @@ node cli.mjs -o ~/articles --img compressed --file urls.txt
 
 ### 输出目录结构
 
+**本地模式（默认）：**
+
 ```
 output/
-└── 文章标题/
-    ├── index.md        # Markdown 文件（含 front matter + 本地图片路径）
-    └── assets/
-        ├── 001.jpeg
-        ├── 002.png
-        └── ...
+├── 文章标题1.md
+├── 文章标题2.md
+└── assets/
+    ├── 文章标题1/
+    │   ├── 001.jpeg
+    │   └── 002.png
+    └── 文章标题2/
+        └── 001.jpeg
+```
+
+**代理模式（`--proxy <url>`）：**
+
+```
+output/
+├── 文章标题1.md
+└── 文章标题2.md
 ```
 
 ### Markdown 输出示例
@@ -214,6 +241,9 @@ output/
 ---
 title: "文章标题"
 author: "公众号名称"
+date: "2026-05-08"
+description: "文章摘要"
+cover: "https://mmbiz.qpic.cn/..."
 source: "https://mp.weixin.qq.com/s/xxxxx"
 ---
 

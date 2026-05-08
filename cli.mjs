@@ -89,15 +89,38 @@ async function fetchArticleHtml(url) {
 }
 
 function checkWxError(rawHtml) {
+  const $ = cheerio.load(rawHtml);
+
+  // 检查微信错误码
   const retMatch = rawHtml.match(/var ret = '(-?\d+)'/);
   if (retMatch) {
     const ret = parseInt(retMatch[1], 10);
     if (ret === -2) {
-      throw new Error('文章链接无效或已过期（ret=-2），请检查 URL 是否正确');
+      throw new Error('文章链接无效或已过期，请检查 URL 是否正确');
     }
     if (ret !== 0) {
       throw new Error('微信返回错误（ret=' + ret + '），文章可能不可访问');
     }
+  }
+
+  // 检查页面级别的错误提示（微信通过 weui-msg 组件显示）
+  const $weuiMsg = $('.weui-msg .weui-msg__title');
+  if ($weuiMsg.length > 0) {
+    const msg = $weuiMsg.text().trim();
+    if (msg.includes('已被发布者删除')) {
+      throw new Error('文章已被作者删除');
+    }
+    if (msg.includes('内容审核中')) {
+      throw new Error('文章正在审核中，暂时无法查看');
+    }
+    if (msg) {
+      throw new Error('文章不可访问: ' + msg);
+    }
+  }
+
+  // 检查正文是否存在
+  if ($('#js_content').length === 0 && $('#js_article').length === 0) {
+    throw new Error('无法提取文章内容，可能是非公开文章或页面结构已变更');
   }
 }
 
@@ -136,10 +159,10 @@ function parseArticle(rawHtml, imgQuality) {
     $('em#publish_time').text().trim() ||
     '';
 
+  const description = $('meta[property="og:description"]').attr('content') || '';
+  const coverImage = $('meta[property="twitter:image"]').attr('content') || '';
+
   const $content = $('#js_content');
-  if ($content.length === 0) {
-    throw new Error('无法提取文章内容，可能是非公开文章或页面结构已变更');
-  }
 
   $content.find('script, style').remove();
   $content.find('#js_top_ad_area, #js_pc_qr_code, #content_bottom_area, #js_tags_preview_toast').remove();
@@ -148,6 +171,32 @@ function parseArticle(rawHtml, imgQuality) {
   $content.find('#js_sponsor_ad_area, #js_tags_area, .rich_media_tool, .qr_code_pc').remove();
   $content.find('#js_pc_read_btn_area, #js_header_author_name_area').remove();
   $content.find('.js_pc_qr_code, #js_pc_qr_code_guide').remove();
+
+  // 将微信特殊内容替换为占位文本，避免 Turndown 输出乱码或丢失
+  $content.find('iframe[class*="video_iframe"]').replaceWith('<p>[视频]</p>');
+  $content.find('mpvoice').replaceWith('<p>[语音]</p>');
+  $content.find('qqmusic').replaceWith('<p>[音乐]</p>');
+  $content.find('mp-weapp, mp-miniprogram').replaceWith('<p>[小程序]</p>');
+  $content.find('iframe[class*="vote_card"], iframe[class*="js_editor_vote_card"]').replaceWith('<p>[投票]</p>');
+  $content.find('mpproduct, mpcps').replaceWith('<p>[商品]</p>');
+  $content.find('mpshop').replaceWith('<p>[小店]</p>');
+  $content.find('mpgongyi').replaceWith('<p>[公益]</p>');
+  $content.find('iframe[class*="card_iframe"][data-cardid]').replaceWith('<p>[卡券]</p>');
+
+  // 清理图片固定高度，避免 Markdown 渲染变形
+  $content.find('img[height]').removeAttr('height');
+
+  // 将 inline style 转为语义标签，弥补 Turndown 只认 <strong>/<em> 不认 style 的缺陷
+  $content.find('span, section, p').each((_, el) => {
+    const style = $(el).attr('style') || '';
+    if (/font-weight:\s*(bold|[6-9]00)/.test(style)) {
+      const inner = $(el).html();
+      $(el).replaceWith('<strong>' + inner + '</strong>');
+    } else if (/font-style:\s*italic/.test(style)) {
+      const inner = $(el).html();
+      $(el).replaceWith('<em>' + inner + '</em>');
+    }
+  });
 
   let contentHtml = $content.html() || '';
 
@@ -175,7 +224,7 @@ function parseArticle(rawHtml, imgQuality) {
   // 微信文章的 img 标签只有 data-src 没有 src，必须转换
   contentHtml = contentHtml.replace(/data-src="/g, 'src="');
 
-  return { title, author, publishTime, contentHtml, htmlImages, rawImages, realImages };
+  return { title, author, publishTime, description, coverImage, contentHtml, htmlImages, rawImages, realImages };
 }
 
 function sanitizeFilename(name) {
@@ -243,7 +292,7 @@ async function downloadImages(realUrls, assetsDir) {
   return urlMap;
 }
 
-function htmlToMarkdown(html, title, author, publishTime, sourceUrl) {
+function htmlToMarkdown(html, title, author, publishTime, sourceUrl, description, coverImage) {
   const turndown = new TurndownService({
     headingStyle: 'atx',
     codeBlockStyle: 'fenced',
@@ -268,6 +317,8 @@ function htmlToMarkdown(html, title, author, publishTime, sourceUrl) {
   const fm = ['---', 'title: "' + escapedTitle + '"'];
   if (author) fm.push('author: "' + author + '"');
   if (publishTime) fm.push('date: "' + publishTime + '"');
+  if (description) fm.push('description: "' + description.replace(/"/g, '\\"') + '"');
+  if (coverImage) fm.push('cover: "' + coverImage + '"');
   fm.push('source: "' + sourceUrl + '"');
   fm.push('---');
 
@@ -280,17 +331,16 @@ async function processArticle(url, outputDir, imgQuality, imgMode, proxyUrl) {
   console.log('\n📄 处理: ' + url);
 
   const rawHtml = await fetchArticleHtml(url);
-  const { title, author, publishTime, contentHtml, htmlImages, rawImages, realImages } = parseArticle(rawHtml, imgQuality);
+  const { title, author, publishTime, description, coverImage, contentHtml, htmlImages, rawImages, realImages } = parseArticle(rawHtml, imgQuality);
 
   console.log('   标题: ' + title);
   console.log('   作者: ' + (author || '未知'));
   console.log('   图片: ' + realImages.length + ' 张');
 
-  const dirName = sanitizeFilename(title);
-  const articleDir = resolve(outputDir, dirName);
+  const fileName = sanitizeFilename(title) + '.md';
 
   // 转 Markdown（此时 img 的 src 已从 data-src 复制过来，Turndown 能识别）
-  let markdown = htmlToMarkdown(contentHtml, title, author, publishTime, url);
+  let markdown = htmlToMarkdown(contentHtml, title, author, publishTime, url, description, coverImage);
 
   if (imgMode === 'proxy' && proxyUrl) {
     // 代理模式：用代理 URL 替换图片链接，不下载到本地
@@ -309,11 +359,11 @@ async function processArticle(url, outputDir, imgQuality, imgMode, proxyUrl) {
       const escaped2 = rawUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       markdown = markdown.replace(new RegExp(escaped2, 'g'), proxyImageUrl);
     }
-    mkdirSync(articleDir, { recursive: true });
+    mkdirSync(outputDir, { recursive: true });
     console.log('   图片使用代理: ' + proxyBase);
   } else {
-    // 本地模式：下载图片到 assets/
-    const assetsDir = join(articleDir, 'assets');
+    // 本地模式：下载图片到 outputDir 下的 assets/ 子目录
+    const assetsDir = join(outputDir, 'assets', sanitizeFilename(title));
     mkdirSync(assetsDir, { recursive: true });
 
     console.log('   下载图片中...');
@@ -327,18 +377,21 @@ async function processArticle(url, outputDir, imgQuality, imgMode, proxyUrl) {
       const localPath = urlMap.get(realUrl);
       if (!localPath) continue;
 
+      const relPath = join('assets', sanitizeFilename(title), localPath.split('/').pop());
+
       // 替换 HTML 实体形式（含 &amp;）
       if (htmlUrl !== rawUrl) {
         const escaped1 = htmlUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        markdown = markdown.replace(new RegExp(escaped1, 'g'), localPath);
+        markdown = markdown.replace(new RegExp(escaped1, 'g'), relPath);
       }
       // 替换已解码形式（Turndown 输出）
       const escaped2 = rawUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      markdown = markdown.replace(new RegExp(escaped2, 'g'), localPath);
+      markdown = markdown.replace(new RegExp(escaped2, 'g'), relPath);
     }
   }
 
-  const mdPath = join(articleDir, 'index.md');
+  mkdirSync(outputDir, { recursive: true });
+  const mdPath = join(outputDir, fileName);
   writeFileSync(mdPath, markdown, 'utf-8');
 
   console.log('   ✅ 已保存: ' + mdPath);
